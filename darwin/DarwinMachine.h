@@ -12,8 +12,8 @@ in the source distribution for its full text.
 #include <sys/sysctl.h>
 
 #include "Machine.h"
+#include "darwin/CpuFreq.h"
 #include "zfs/ZfsArcStats.h"
-
 
 typedef struct DarwinMachine_ {
    Machine super;
@@ -22,6 +22,10 @@ typedef struct DarwinMachine_ {
    vm_statistics64_data_t vm_stats;
    processor_cpu_load_info_t prev_load;
    processor_cpu_load_info_t curr_load;
+#ifdef CPUFREQ_SUPPORT
+   CpuFreqData cpu_freq;
+   bool cpu_freq_ok;
+#endif
 
    io_service_t GPUService;
 
