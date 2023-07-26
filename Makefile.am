@@ -370,6 +370,7 @@ endif
 # ------
 
 darwin_platform_headers = \
+	darwin/CpuFreq.h \
 	darwin/DarwinMachine.h \
 	darwin/DarwinProcess.h \
 	darwin/DarwinProcessTable.h \
@@ -387,6 +388,7 @@ darwin_platform_headers = \
 
 darwin_platform_sources = \
 	GPUMeter.c \
+	darwin/CpuFreq.c \
 	darwin/Platform.c \
 	darwin/PlatformHelpers.c \
 	darwin/DarwinMachine.c \
