@@ -89,6 +89,10 @@ void Machine_scan(Machine* super) {
    DarwinMachine_allocateCPULoadInfo(&host->curr_load);
    DarwinMachine_getVMStats(host);
    openzfs_sysctl_updateArcStats(&host->zfs);
+#ifdef CPUFREQ_SUPPORT
+   if (host->cpu_freq_ok)
+      CpuFreq_update(&host->cpu_freq);
+#endif
 }
 
 Machine* Machine_new(UsersTable* usersTable, uid_t userId) {
@@ -111,9 +115,13 @@ Machine* Machine_new(UsersTable* usersTable, uid_t userId) {
    openzfs_sysctl_updateArcStats(&this->zfs);
 
    this->GPUService = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOGPU"));
-   if (!this->GPUService) {
+   if (!this->GPUService)
       CRT_debug("Cannot initialize IOGPU service");
-   }
+
+#ifdef CPUFREQ_SUPPORT
+   /* Initialize CPU frequency data */
+   this->cpu_freq_ok = CpuFreq_init(&this->super, &this->cpu_freq) == 0;
+#endif
 
    return super;
 }
@@ -124,6 +132,10 @@ void Machine_delete(Machine* super) {
    IOObjectRelease(this->GPUService);
 
    DarwinMachine_freeCPULoadInfo(&this->prev_load);
+
+#ifdef CPUFREQ_SUPPORT
+   CpuFreq_cleanup(&this->cpu_freq);
+#endif
 
    Machine_done(super);
    free(this);
