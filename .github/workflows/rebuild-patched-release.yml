@@ -124,8 +124,8 @@ jobs:
             depends_on "automake" => :build
             depends_on "libtool" => :build
             depends_on "pkgconf" => :build
-            depends_on "ncurses"
             depends_on :macos
+            depends_on "ncurses"
 
             conflicts_with "htop", because: "both install an htop binary"
 
