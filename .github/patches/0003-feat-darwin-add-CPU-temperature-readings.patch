@@ -1,0 +1,391 @@
+From a43b682e174a3c857d4aae9f0101cab497c61082 Mon Sep 17 00:00:00 2001
+From: egigoka <egigoka@gmail.com>
+Date: Tue, 21 Jul 2026 12:49:48 +0500
+Subject: [PATCH] feat(darwin): add CPU temperature readings
+
+Assisted-by: OpenCode (GPT-5.6)
+Signed-off-by: egigoka <egigoka@gmail.com>
+---
+ DisplayOptionsPanel.c       |   2 +-
+ Makefile.am                 |   2 +
+ configure.ac                |   4 +-
+ darwin/CpuTemp.c            | 194 ++++++++++++++++++++++++++++++++++++
+ darwin/CpuTemp.h            |  23 +++++
+ darwin/DarwinMachine.c      |  12 +++
+ darwin/DarwinMachine.h      |   5 +
+ darwin/DarwinProcessTable.c |   2 +
+ darwin/Platform.c           |   4 +
+ 9 files changed, 246 insertions(+), 2 deletions(-)
+ create mode 100644 darwin/CpuTemp.c
+ create mode 100644 darwin/CpuTemp.h
+
+diff --git a/DisplayOptionsPanel.c b/DisplayOptionsPanel.c
+index 292f6b6e..71128aa5 100644
+--- a/DisplayOptionsPanel.c
++++ b/DisplayOptionsPanel.c
+@@ -299,7 +299,7 @@ DisplayOptionsPanel* DisplayOptionsPanel_new(Settings* settings, ScreenManager*
+    Panel_add(super, (Object*) CheckItem_newByRef(
+    #if defined(HTOP_LINUX)
+                                                  "Also show CPU temperature (requires libsensors)",
+-   #elif defined(HTOP_FREEBSD)
++   #elif defined(HTOP_FREEBSD) || defined(HTOP_DARWIN)
+                                                  "Also show CPU temperature",
+    #else
+    #error Unknown temperature implementation!
+diff --git a/Makefile.am b/Makefile.am
+index b67ff92d..adfc15bc 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -371,6 +371,7 @@ endif
+ 
+ darwin_platform_headers = \
+ 	darwin/CpuFreq.h \
++	darwin/CpuTemp.h \
+ 	darwin/DarwinMachine.h \
+ 	darwin/DarwinProcess.h \
+ 	darwin/DarwinProcessTable.h \
+@@ -389,6 +390,7 @@ darwin_platform_headers = \
+ darwin_platform_sources = \
+ 	GPUMeter.c \
+ 	darwin/CpuFreq.c \
++	darwin/CpuTemp.c \
+ 	darwin/Platform.c \
+ 	darwin/PlatformHelpers.c \
+ 	darwin/DarwinMachine.c \
+diff --git a/configure.ac b/configure.ac
+index 757d8c4b..cfa26591 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1684,7 +1684,9 @@ case "$enable_sensors" in
+       AC_MSG_ERROR([bad value '$enable_sensors' for --enable-sensors])
+       ;;
+ esac
+-if test "$enable_sensors" = yes || test "$my_htop_platform" = freebsd; then
++if test "$enable_sensors" = yes ||
++   test "$my_htop_platform" = freebsd ||
++   test "$my_htop_platform:$my_htop_cpu" = darwin:aarch64; then
+    AC_DEFINE([BUILD_WITH_CPU_TEMP], [1], [Define if CPU temperature option should be enabled.])
+ fi
+ 
+diff --git a/darwin/CpuTemp.c b/darwin/CpuTemp.c
+new file mode 100644
+index 00000000..e538c73b
+--- /dev/null
++++ b/darwin/CpuTemp.c
+@@ -0,0 +1,194 @@
++#include "config.h" // IWYU pragma: keep
++
++#include "darwin/CpuTemp.h"
++
++#ifdef CPUTEMP_SUPPORT
++
++#include <math.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/sysctl.h>
++
++enum {
++   SMC_SELECTOR = 2,
++   SMC_CMD_READ_BYTES = 5,
++   SMC_CMD_READ_KEYINFO = 9,
++   SMC_MAX_BYTES = 32,
++};
++
++typedef struct {
++   uint8_t major;
++   uint8_t minor;
++   uint8_t build;
++   uint8_t reserved;
++   uint16_t release;
++} SMCVersion;
++
++typedef struct {
++   uint16_t version;
++   uint16_t length;
++   uint32_t cpuPLimit;
++   uint32_t gpuPLimit;
++   uint32_t memPLimit;
++} SMCLimitData;
++
++typedef struct {
++   uint32_t dataSize;
++   uint32_t dataType;
++   uint8_t dataAttributes;
++} SMCKeyInfo;
++
++typedef struct {
++   uint32_t key;
++   SMCVersion version;
++   SMCLimitData limits;
++   SMCKeyInfo keyInfo;
++   uint8_t result;
++   uint8_t status;
++   uint8_t data8;
++   uint32_t data32;
++   uint8_t bytes[SMC_MAX_BYTES];
++} SMCKeyData;
++
++static const char* const cpuTempKeysM1[] = {
++   "Tp09", "Tp0T", "Tp01", "Tp05", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0X", "Tp0b",
++};
++
++static const char* const cpuTempKeysM2[] = {
++   "Tp1h", "Tp1t", "Tp1p", "Tp1l", "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0X", "Tp0b", "Tp0f", "Tp0j",
++};
++
++static const char* const cpuTempKeysM3[] = {
++   "Te05", "Te0L", "Te0P", "Te0S", "Tf04", "Tf09", "Tf0A", "Tf0B",
++   "Tf0D", "Tf0E", "Tf44", "Tf49", "Tf4A", "Tf4B", "Tf4D", "Tf4E",
++};
++
++static const char* const cpuTempKeysM4[] = {
++   "Te05", "Te09", "Te0H", "Te0S", "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0V", "Tp0Y", "Tp0b", "Tp0e",
++};
++
++static const char* const cpuTempKeysM5[] = {
++   "Tp00", "Tp04", "Tp08", "Tp0C", "Tp0G", "Tp0K", "Tp0O", "Tp0R", "Tp0U",
++   "Tp0X", "Tp0a", "Tp0d", "Tp0g", "Tp0j", "Tp0m", "Tp0p", "Tp0u", "Tp0y",
++};
++
++static uint32_t CpuTemp_fourCC(const char value[4]) {
++   return (uint32_t)(uint8_t)value[0] << 24 |
++          (uint32_t)(uint8_t)value[1] << 16 |
++          (uint32_t)(uint8_t)value[2] << 8 |
++          (uint32_t)(uint8_t)value[3];
++}
++
++static kern_return_t CpuTemp_readKey(io_connect_t connection, const char key[4], SMCKeyData* output) {
++   SMCKeyData input = {0};
++   size_t outputSize = sizeof(*output);
++
++   input.key = CpuTemp_fourCC(key);
++   input.data8 = SMC_CMD_READ_KEYINFO;
++   kern_return_t result = IOConnectCallStructMethod(connection, SMC_SELECTOR, &input, sizeof(input), output, &outputSize);
++   if (result != kIOReturnSuccess || output->keyInfo.dataSize == 0 || output->keyInfo.dataSize > SMC_MAX_BYTES)
++      return result != kIOReturnSuccess ? result : kIOReturnBadArgument;
++
++   SMCKeyInfo keyInfo = output->keyInfo;
++   input.keyInfo.dataSize = keyInfo.dataSize;
++   input.data8 = SMC_CMD_READ_BYTES;
++   memset(output, 0, sizeof(*output));
++   outputSize = sizeof(*output);
++   result = IOConnectCallStructMethod(connection, SMC_SELECTOR, &input, sizeof(input), output, &outputSize);
++   output->keyInfo = keyInfo;
++   return result;
++}
++
++static double CpuTemp_keyValue(const SMCKeyData* data) {
++   if (data->keyInfo.dataType == CpuTemp_fourCC("flt ") && data->keyInfo.dataSize >= sizeof(float)) {
++      float value;
++      memcpy(&value, data->bytes, sizeof(value));
++      return value;
++   }
++
++   if (data->keyInfo.dataType == CpuTemp_fourCC("sp78") && data->keyInfo.dataSize >= 2)
++      return ((int8_t)data->bytes[0] * 256 + data->bytes[1]) / 256.0;
++
++   return NAN;
++}
++
++static int CpuTemp_selectKeys(CpuTempData* data, unsigned int generation) {
++   switch (generation) {
++      case 1:
++         data->keys = cpuTempKeysM1;
++         data->keyCount = sizeof(cpuTempKeysM1) / sizeof(cpuTempKeysM1[0]);
++         return 0;
++      case 2:
++         data->keys = cpuTempKeysM2;
++         data->keyCount = sizeof(cpuTempKeysM2) / sizeof(cpuTempKeysM2[0]);
++         return 0;
++      case 3:
++         data->keys = cpuTempKeysM3;
++         data->keyCount = sizeof(cpuTempKeysM3) / sizeof(cpuTempKeysM3[0]);
++         return 0;
++      case 4:
++         data->keys = cpuTempKeysM4;
++         data->keyCount = sizeof(cpuTempKeysM4) / sizeof(cpuTempKeysM4[0]);
++         return 0;
++      case 5:
++         data->keys = cpuTempKeysM5;
++         data->keyCount = sizeof(cpuTempKeysM5) / sizeof(cpuTempKeysM5[0]);
++         return 0;
++      default:
++         return -1;
++   }
++}
++
++int CpuTemp_init(CpuTempData* data) {
++   data->connection = IO_OBJECT_NULL;
++   data->keys = NULL;
++   data->keyCount = 0;
++   data->temperature = NAN;
++
++   char brand[128];
++   size_t brandSize = sizeof(brand);
++   if (sysctlbyname("machdep.cpu.brand_string", brand, &brandSize, NULL, 0) != 0 || brandSize == 0)
++      return -1;
++   brand[sizeof(brand) - 1] = '\0';
++
++   unsigned int generation;
++   if (sscanf(brand, "Apple M%u", &generation) != 1 || CpuTemp_selectKeys(data, generation) != 0)
++      return -1;
++
++   io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"));
++   if (service == IO_OBJECT_NULL)
++      return -1;
++
++   kern_return_t result = IOServiceOpen(service, mach_task_self(), 0, &data->connection);
++   IOObjectRelease(service);
++   return result == kIOReturnSuccess ? 0 : -1;
++}
++
++void CpuTemp_update(CpuTempData* data) {
++   double sum = 0.0;
++   size_t count = 0;
++
++   for (size_t i = 0; i < data->keyCount; i++) {
++      SMCKeyData keyData = {0};
++      if (CpuTemp_readKey(data->connection, data->keys[i], &keyData) != kIOReturnSuccess)
++         continue;
++
++      double value = CpuTemp_keyValue(&keyData);
++      if (value > 0.0 && value <= 150.0) {
++         sum += value;
++         count++;
++      }
++   }
++
++   data->temperature = count > 0 ? sum / count : NAN;
++}
++
++void CpuTemp_cleanup(CpuTempData* data) {
++   if (data->connection != IO_OBJECT_NULL) {
++      IOServiceClose(data->connection);
++      data->connection = IO_OBJECT_NULL;
++   }
++}
++
++#endif
+diff --git a/darwin/CpuTemp.h b/darwin/CpuTemp.h
+new file mode 100644
+index 00000000..a53a8e19
+--- /dev/null
++++ b/darwin/CpuTemp.h
+@@ -0,0 +1,23 @@
++#ifndef HEADER_CpuTemp
++#define HEADER_CpuTemp
++
++#if defined(BUILD_WITH_CPU_TEMP) && defined(HTOP_AARCH64)
++#define CPUTEMP_SUPPORT
++
++#include <stddef.h>
++
++#include <IOKit/IOKitLib.h>
++
++typedef struct {
++   io_connect_t connection;
++   const char* const* keys;
++   size_t keyCount;
++   double temperature;
++} CpuTempData;
++
++int CpuTemp_init(CpuTempData* data);
++void CpuTemp_update(CpuTempData* data);
++void CpuTemp_cleanup(CpuTempData* data);
++#endif
++
++#endif
+diff --git a/darwin/DarwinMachine.c b/darwin/DarwinMachine.c
+index 51412cc4..43331a30 100644
+--- a/darwin/DarwinMachine.c
++++ b/darwin/DarwinMachine.c
+@@ -1,3 +1,5 @@
++#include "config.h" // IWYU pragma: keep
++
+ /*
+ htop - DarwinMachine.c
+ (C) 2014 Hisham H. Muhammad
+@@ -93,6 +95,10 @@ void Machine_scan(Machine* super) {
+    if (host->cpu_freq_ok)
+       CpuFreq_update(&host->cpu_freq);
+ #endif
++#ifdef CPUTEMP_SUPPORT
++   if (host->cpu_temp_ok && super->settings->showCPUTemperature)
++      CpuTemp_update(&host->cpu_temp);
++#endif
+ }
+ 
+ Machine* Machine_new(UsersTable* usersTable, uid_t userId) {
+@@ -122,6 +128,9 @@ Machine* Machine_new(UsersTable* usersTable, uid_t userId) {
+    /* Initialize CPU frequency data */
+    this->cpu_freq_ok = CpuFreq_init(&this->super, &this->cpu_freq) == 0;
+ #endif
++#ifdef CPUTEMP_SUPPORT
++   this->cpu_temp_ok = CpuTemp_init(&this->cpu_temp) == 0;
++#endif
+ 
+    return super;
+ }
+@@ -136,6 +145,9 @@ void Machine_delete(Machine* super) {
+ #ifdef CPUFREQ_SUPPORT
+    CpuFreq_cleanup(&this->cpu_freq);
+ #endif
++#ifdef CPUTEMP_SUPPORT
++   CpuTemp_cleanup(&this->cpu_temp);
++#endif
+ 
+    Machine_done(super);
+    free(this);
+diff --git a/darwin/DarwinMachine.h b/darwin/DarwinMachine.h
+index d1c37b2a..cf3b3d7b 100644
+--- a/darwin/DarwinMachine.h
++++ b/darwin/DarwinMachine.h
+@@ -13,6 +13,7 @@ in the source distribution for its full text.
+ 
+ #include "Machine.h"
+ #include "darwin/CpuFreq.h"
++#include "darwin/CpuTemp.h"
+ #include "zfs/ZfsArcStats.h"
+ 
+ typedef struct DarwinMachine_ {
+@@ -26,6 +27,10 @@ typedef struct DarwinMachine_ {
+    CpuFreqData cpu_freq;
+    bool cpu_freq_ok;
+ #endif
++#ifdef CPUTEMP_SUPPORT
++   CpuTempData cpu_temp;
++   bool cpu_temp_ok;
++#endif
+ 
+    io_service_t GPUService;
+ 
+diff --git a/darwin/DarwinProcessTable.c b/darwin/DarwinProcessTable.c
+index 9a2f6d5d..aa087396 100644
+--- a/darwin/DarwinProcessTable.c
++++ b/darwin/DarwinProcessTable.c
+@@ -1,3 +1,5 @@
++#include "config.h" // IWYU pragma: keep
++
+ /*
+ htop - DarwinProcessTable.c
+ (C) 2014 Hisham H. Muhammad
+diff --git a/darwin/Platform.c b/darwin/Platform.c
+index c42d9d32..8fc78302 100644
+--- a/darwin/Platform.c
++++ b/darwin/Platform.c
+@@ -364,7 +364,11 @@ double Platform_setCPUValues(Meter* mtr, unsigned int cpu) {
+ #else
+    mtr->values[CPU_METER_FREQUENCY] = NAN;
+ #endif
++#ifdef CPUTEMP_SUPPORT
++   mtr->values[CPU_METER_TEMPERATURE] = dhost->cpu_temp_ok ? dhost->cpu_temp.temperature : NAN;
++#else
+    mtr->values[CPU_METER_TEMPERATURE] = NAN;
++#endif
+ 
+    return CLAMP(total, 0.0, 100.0);
+ }
+-- 
+2.55.0
+

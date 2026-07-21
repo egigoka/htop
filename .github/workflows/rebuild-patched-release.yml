@@ -92,7 +92,7 @@ jobs:
           gh release create "$PATCHED_TAG" "$archive" \
             --repo "$GITHUB_REPOSITORY" \
             --title "htop ${PATCHED_TAG}" \
-            --notes "htop ${UPSTREAM_TAG} with Apple Silicon CPU frequency support from htop-dev/htop#1272."
+            --notes "htop ${UPSTREAM_TAG} with Apple Silicon CPU frequency and temperature support."
           printf 'sha256=%s\n' "$sha256" >> "$GITHUB_OUTPUT"
 
       - name: Check out tap
@@ -113,7 +113,7 @@ jobs:
           mkdir -p tap/Formula
           cat > tap/Formula/htop-patched.rb <<'RUBY'
           class HtopPatched < Formula
-            desc "Interactive process viewer with Apple Silicon CPU frequency support"
+            desc "Interactive process viewer with Apple Silicon CPU frequency and temperature support"
             homepage "https://github.com/egigoka/htop"
             url "https://github.com/egigoka/htop/releases/download/__VERSION__/htop-__VERSION__.tar.gz"
             version "__VERSION__"
