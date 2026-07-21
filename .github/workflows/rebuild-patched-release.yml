@@ -1,0 +1,152 @@
+name: Rebuild patched release
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rebuild-patched-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: htop-dev/htop
+  TAP_REPOSITORY: egigoka/homebrew-casks-patched
+
+jobs:
+  rebuild:
+    runs-on: macos-15
+    steps:
+      - name: Check out patch source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream_tag="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq .tag_name)"
+          upstream_version="${upstream_tag#v}"
+          patched_tag="${upstream_version}e1"
+          if gh release view "$patched_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            printf 'skip=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'skip=false\n' >> "$GITHUB_OUTPUT"
+          fi
+          printf 'upstream_tag=%s\n' "$upstream_tag" >> "$GITHUB_OUTPUT"
+          printf 'patched_tag=%s\n' "$patched_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Apply patches
+        if: steps.release.outputs.skip != 'true'
+        env:
+          PATCHED_TAG: ${{ steps.release.outputs.patched_tag }}
+          UPSTREAM_TAG: ${{ steps.release.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/htop-patches"
+          cp .github/patches/*.patch "$RUNNER_TEMP/htop-patches/"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}" --force
+          git checkout --detach "$UPSTREAM_TAG"
+          git am --3way "$RUNNER_TEMP/htop-patches/"*.patch
+          perl -0pi -e 's/m4_define\(\[htop_release_version\], \[[^]]+\]\)/m4_define([htop_release_version], [$ENV{PATCHED_TAG}])/' configure.ac
+          git add configure.ac
+          git commit -m "chore: set version ${PATCHED_TAG}"
+
+      - name: Build and smoke test
+        if: steps.release.outputs.skip != 'true'
+        env:
+          PATCHED_TAG: ${{ steps.release.outputs.patched_tag }}
+        run: |
+          set -euo pipefail
+          brew install autoconf automake libtool pkgconf ncurses
+          ./autogen.sh
+          ./configure --prefix="$RUNNER_TEMP/htop-install"
+          make -j"$(sysctl -n hw.ncpu)"
+          ./htop --version | grep -F "$PATCHED_TAG"
+          printf q | env TERM=xterm ./htop >/dev/null
+          make install
+
+      - name: Publish source release
+        if: steps.release.outputs.skip != 'true'
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATCHED_TAG: ${{ steps.release.outputs.patched_tag }}
+          UPSTREAM_TAG: ${{ steps.release.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/htop-${PATCHED_TAG}.tar.gz"
+          git archive --format=tar.gz --prefix="htop-${PATCHED_TAG}/" --output="$archive" HEAD
+          sha256="$(shasum -a 256 "$archive" | cut -d ' ' -f 1)"
+          git tag -f "$PATCHED_TAG"
+          git push origin "refs/tags/${PATCHED_TAG}" --force
+          gh release create "$PATCHED_TAG" "$archive" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "htop ${PATCHED_TAG}" \
+            --notes "htop ${UPSTREAM_TAG} with Apple Silicon CPU frequency support from htop-dev/htop#1272."
+          printf 'sha256=%s\n' "$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Check out tap
+        if: steps.release.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.TAP_REPOSITORY }}
+          token: ${{ secrets.TAP_REPO_TOKEN }}
+          path: tap
+
+      - name: Update formula
+        if: steps.release.outputs.skip != 'true'
+        env:
+          PATCHED_TAG: ${{ steps.release.outputs.patched_tag }}
+          SHA256: ${{ steps.publish.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p tap/Formula
+          cat > tap/Formula/htop-patched.rb <<'RUBY'
+          class HtopPatched < Formula
+            desc "Interactive process viewer with Apple Silicon CPU frequency support"
+            homepage "https://github.com/egigoka/htop"
+            url "https://github.com/egigoka/htop/releases/download/__VERSION__/htop-__VERSION__.tar.gz"
+            version "__VERSION__"
+            sha256 "__SHA256__"
+            license "GPL-2.0-or-later"
+
+            depends_on "autoconf" => :build
+            depends_on "automake" => :build
+            depends_on "libtool" => :build
+            depends_on "pkgconf" => :build
+            depends_on "ncurses"
+            depends_on :macos
+
+            conflicts_with "htop", because: "both install an htop binary"
+
+            def install
+              system "./autogen.sh"
+              system "./configure", "--prefix=#{prefix}"
+              system "make", "install"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/htop --version")
+              assert_equal 0, pipe_output(bin/"htop", "q", 0)
+            end
+          end
+          RUBY
+          perl -0pi -e 's/__VERSION__/$ENV{PATCHED_TAG}/g; s/__SHA256__/$ENV{SHA256}/g' tap/Formula/htop-patched.rb
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C tap add Formula/htop-patched.rb
+          if git -C tap diff --cached --quiet; then
+            exit 0
+          fi
+          git -C tap commit -m "Update htop-patched to ${PATCHED_TAG}"
+          git -C tap push origin HEAD:main
