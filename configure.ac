@@ -1684,7 +1684,9 @@ case "$enable_sensors" in
       AC_MSG_ERROR([bad value '$enable_sensors' for --enable-sensors])
       ;;
 esac
-if test "$enable_sensors" = yes || test "$my_htop_platform" = freebsd; then
+if test "$enable_sensors" = yes ||
+   test "$my_htop_platform" = freebsd ||
+   test "$my_htop_platform:$my_htop_cpu" = darwin:aarch64; then
    AC_DEFINE([BUILD_WITH_CPU_TEMP], [1], [Define if CPU temperature option should be enabled.])
 fi
 

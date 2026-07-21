@@ -364,7 +364,11 @@ double Platform_setCPUValues(Meter* mtr, unsigned int cpu) {
 #else
    mtr->values[CPU_METER_FREQUENCY] = NAN;
 #endif
+#ifdef CPUTEMP_SUPPORT
+   mtr->values[CPU_METER_TEMPERATURE] = dhost->cpu_temp_ok ? dhost->cpu_temp.temperature : NAN;
+#else
    mtr->values[CPU_METER_TEMPERATURE] = NAN;
+#endif
 
    return CLAMP(total, 0.0, 100.0);
 }

@@ -13,6 +13,7 @@ in the source distribution for its full text.
 
 #include "Machine.h"
 #include "darwin/CpuFreq.h"
+#include "darwin/CpuTemp.h"
 #include "zfs/ZfsArcStats.h"
 
 typedef struct DarwinMachine_ {
@@ -25,6 +26,10 @@ typedef struct DarwinMachine_ {
 #ifdef CPUFREQ_SUPPORT
    CpuFreqData cpu_freq;
    bool cpu_freq_ok;
+#endif
+#ifdef CPUTEMP_SUPPORT
+   CpuTempData cpu_temp;
+   bool cpu_temp_ok;
 #endif
 
    io_service_t GPUService;
