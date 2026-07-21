@@ -113,7 +113,7 @@ jobs:
           mkdir -p tap/Formula
           cat > tap/Formula/htop-patched.rb <<'RUBY'
           class HtopPatched < Formula
-            desc "Interactive process viewer with Apple Silicon CPU frequency and temperature support"
+            desc "Process viewer with Apple Silicon CPU frequency and temperature support"
             homepage "https://github.com/egigoka/htop"
             url "https://github.com/egigoka/htop/releases/download/__VERSION__/htop-__VERSION__.tar.gz"
             version "__VERSION__"
