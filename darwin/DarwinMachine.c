@@ -1,3 +1,5 @@
+#include "config.h" // IWYU pragma: keep
+
 /*
 htop - DarwinMachine.c
 (C) 2014 Hisham H. Muhammad
@@ -93,6 +95,10 @@ void Machine_scan(Machine* super) {
    if (host->cpu_freq_ok)
       CpuFreq_update(&host->cpu_freq);
 #endif
+#ifdef CPUTEMP_SUPPORT
+   if (host->cpu_temp_ok && super->settings->showCPUTemperature)
+      CpuTemp_update(&host->cpu_temp);
+#endif
 }
 
 Machine* Machine_new(UsersTable* usersTable, uid_t userId) {
@@ -122,6 +128,9 @@ Machine* Machine_new(UsersTable* usersTable, uid_t userId) {
    /* Initialize CPU frequency data */
    this->cpu_freq_ok = CpuFreq_init(&this->super, &this->cpu_freq) == 0;
 #endif
+#ifdef CPUTEMP_SUPPORT
+   this->cpu_temp_ok = CpuTemp_init(&this->cpu_temp) == 0;
+#endif
 
    return super;
 }
@@ -135,6 +144,9 @@ void Machine_delete(Machine* super) {
 
 #ifdef CPUFREQ_SUPPORT
    CpuFreq_cleanup(&this->cpu_freq);
+#endif
+#ifdef CPUTEMP_SUPPORT
+   CpuTemp_cleanup(&this->cpu_temp);
 #endif
 
    Machine_done(super);

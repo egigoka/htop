@@ -1,3 +1,5 @@
+#include "config.h" // IWYU pragma: keep
+
 /*
 htop - DarwinProcessTable.c
 (C) 2014 Hisham H. Muhammad
