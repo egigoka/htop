@@ -17,6 +17,17 @@ env:
   TAP_REPOSITORY: egigoka/homebrew-casks-patched
 
 jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      # Reset the inactivity timer even when no new release needs rebuilding.
+      - name: Renew scheduled workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/rebuild-patched-release.yml/enable"
+
   rebuild:
     runs-on: macos-15
     steps:
